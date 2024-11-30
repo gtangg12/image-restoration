@@ -15,8 +15,9 @@ np.random.seed(0)
 
 g = 9.81 # Gravity
 A = 8192 # Phillips spectrum parameter
-WATER_ALBEDO = torch.tensor([0.00, 0.48, 0.57])
 UP_DIRECTION = torch.tensor([0.00, 1.00, 0.00])
+WATER_ALBEDO_TOP = torch.tensor([0.60, 0.60, 0.60])
+WATER_ALBEDO_BOT = torch.tensor([0.00, 0.48, 0.57])
 
 
 @dataclass
@@ -196,6 +197,18 @@ def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tenso
     return OceanPatch(hmap, nmap, rmap, dict(Lx=Lx, Lz=Lz, M=M, N=N, t=t, wind=wind, height_grad=hmap_grad))
 
 
+def generate_ocean_albedo(depth: Float[Tensor, "H W"]) -> Float[Tensor, "H W 3"]:
+    """ Generate a random ocean albedo map
+    """
+    albedo_top = WATER_ALBEDO_TOP.to(depth.device)
+    albedo_bot = WATER_ALBEDO_BOT.to(depth.device)
+    return torch.where(
+        depth[..., None] < 1, 
+        albedo_top + (albedo_bot - albedo_top) * depth[..., None], 
+        albedo_bot
+    )
+    #return WATER_ALBEDO.to(depth.device).expand(depth.shape[0], depth.shape[1], 3)
+
 def points2indices(points: Float[Tensor, "H W 3"], M: int, N: int, Lx: float, Lz: float, mod=False) -> tuple[
     Float[Tensor, "H * W"],
     Float[Tensor, "H * W"]
@@ -227,9 +240,11 @@ def generate_ocean_bottom_lightmap(
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
     depth = depth if depth is not None else torch.full((H, W), 5.0)
     light = light if light is not None else -UP_DIRECTION
+    color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
     light = light.to(device)
+    color = color.to(device)
 
     ni = light / torch.norm(light.float())
     ns = patch.normal
@@ -252,7 +267,7 @@ def generate_ocean_bottom_lightmap(
         light_ambient, 
         light_scatter,
         transmission_mult[..., None]
-    )[mask] * WATER_ALBEDO.to(device)
+    )[mask] * color[mask]
     
     # lightmap is density based so smooth operation should be average
     accum = accum.permute(2, 0, 1)[None]
@@ -279,9 +294,11 @@ def apply_corruption_ocean(
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
     depth = depth if depth is not None else torch.full((H, W), 5)
     light = light if light is not None else -UP_DIRECTION
+    color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
     light = light.to(device)
+    color = color.to(device)
     image_bottom = generate_ocean_bottom_lightmap(
         patch, 
         image, 
@@ -322,14 +339,14 @@ def apply_corruption_ocean(
         light_ambient,
         light_scatter, 
         transmission_mult[..., None]
-    )[x, z] * WATER_ALBEDO.to(device)
+    )[x, z] * color
     #accum = torch.log(1 + accum) # smooth out lightmap
 
     # compute reflection by seeing if unreflected ray is within cosine threshold of vertical
     reflection_unit = torch.tensor([light[0], -light[1], light[2]], device=device) / torch.norm(light)
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
-    #reflection_gain = reflection_gain * WATER_ALBEDO.to(device)
+    #reflection_gain = reflection_gain * color
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
 
     return torch.clamp(accum, 0, 1)
