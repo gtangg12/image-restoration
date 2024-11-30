@@ -235,7 +235,7 @@ def generate_ocean_bottom_lightmap(
     ns = patch.normal
     ni = ni.to(device)
     ns = ns.to(device)
-    nt = refraction(ni, ns, REFRACTION_INDEX['water'], REFRACTION_INDEX['air'])
+    nt = refraction(ni, ns, REFRACTION_INDEX['air'], REFRACTION_INDEX['water'])
     _, transmission_mult = compute_fresnel(ni, ns, nt) # (H, W)
 
     # trace light rays from ocean surface to ocean bottom
