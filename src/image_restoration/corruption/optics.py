@@ -78,19 +78,6 @@ def compute_transmission(
     return transmission_mult * luminance * image + scattered
 
 
-def interpolate_with_nearest(tensor: Float[Tensor, "H W 3"], mask: Bool[Tensor, "H W"]) -> Float[Tensor, "H W 3"]:
-    """ Interpolates a tensor by filling masked areas with the value of the nearest non-mask elements.
-    """
-    mask_np = mask.cpu().numpy()
-    _, nearest_indices = distance_transform_edt(
-        mask_np,
-        return_indices=True
-    )
-    interpolated_np = tensor.cpu().numpy()
-    interpolated_np[mask_np] = interpolated_np[tuple(nearest_indices[:, mask_np])]
-    return torch.from_numpy(interpolated_np).to(tensor.device)
-
-
 if __name__ == '__main__':
     # test reflection
     ni = torch.tensor([ 1, -1,  0]).float()

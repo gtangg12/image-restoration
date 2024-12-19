@@ -14,25 +14,25 @@ np.random.seed(0)
 
 
 g = 9.81 # Gravity
-A = 8192 # Phillips spectrum parameter
 UP_DIRECTION = torch.tensor([0.00, 1.00, 0.00])
 WATER_ALBEDO_TOP = torch.tensor([0.60, 0.60, 0.60])
 WATER_ALBEDO_BOT = torch.tensor([0.00, 0.48, 0.57])
+WATER_ALBEDO_END = 1
 
 
 @dataclass
 class OceanPatch:
-    """ M x N resolution ocean patch of size Lx x Lz (m)
+    """ N x M resolution ocean patch of size Lz x Lx (m)
     """
     # Height and normal maps of the ocean patch
-    height: Float32[Tensor, "M N"]
-    normal: Float32[Tensor, "M N 3"]
-    points: Float32[Tensor, "M N 3"]
+    height: Float32[Tensor, "N M"]
+    normal: Float32[Tensor, "N M 3"]
+    points: Float32[Tensor, "N M 3"]
 
     # Ocean patch metadata
     metadata: dict = field(default_factory=dict)
 
-    def camera_bundle(self, fov: float = 90) -> RayBundle:
+    def camera_bundle(self, fov: float = 60) -> RayBundle:
         """ Constructs camera ray bundle of a camera looking at center of ocean patch from directly above 
         """
         Lx = self.metadata['Lx']
@@ -61,6 +61,7 @@ def generate_ocean_patch_wave_spectrum(
     wind: Float[Tensor, "2"], 
     wind_alignment: float = 6,
     wave_dampening: float = 0.1,
+    wave_amplitude: float = 4096,
 ) -> Float[Tensor, "M N"]:
     """ Generate an fourier spectrum of ocean waves acording to the Phillips spectrum
 
@@ -93,7 +94,7 @@ def generate_ocean_patch_wave_spectrum(
         kz * wind_dir[1]
     ) / k
     dampening = torch.exp(-k ** 2 * wave_dampening ** 2)
-    wave_spectrum = (A * torch.exp(-1 / (k * wave_max) ** 2) / k ** 4) * (cos_theta ** wind_alignment) * dampening # P_h(k)
+    wave_spectrum = (wave_amplitude * torch.exp(-1 / (k * wave_max) ** 2) / k ** 4) * (cos_theta ** wind_alignment) * dampening # P_h(k)
     wave_spectrum[k == 0] = 0 # Avoid division by zero
     return wave_spectrum
 
@@ -113,7 +114,7 @@ def generate_ocean_patch_dispersion_relation(k: Float[Tensor, "M N"], depth: Flo
     return torch.sqrt(g * k * torch.tanh(k * depth))
 
 
-def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tensor,"2"], t: float = 0, **kwargs) -> OceanPatch:
+def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tensor,"2"], t = 0, **kwargs) -> OceanPatch:
     """ Generate a random ocean patch at a given timestamp using FFT method described in:
 
     https://people.computing.clemson.edu/~jtessen/reports/papers_files/coursenotes2004.pdf (Section 4.3 and 4.4)
@@ -150,8 +151,8 @@ def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tenso
     Params:
         Lx: Size of the ocean patch in x direction (m)
         Lz: Size of the ocean patch in y direction (m)
-        M: Resolution of the ocean patch in x direction
-        N: Resolution of the ocean patch in y direction
+        M: Resolution of the ocean patch in x direction (cols)
+        N: Resolution of the ocean patch in z direction (rows)
         t: Timestamp to simulate
         wind: Vector representing the wind direction and speed (m/s)
 
@@ -159,10 +160,10 @@ def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tenso
         Ocean patch with height and normal maps as well as position map for each grid point
     """
     # Generate wave numbers
-    dx = 2 * torch.pi / Lx
-    dy = 2 * torch.pi / Lz
-    kx = torch.fft.fftfreq (M, d=dx) # Wave numbers in x (0, 1, ..., N/2, -N/2, ..., -1)
-    kz = torch.fft.rfftfreq(N, d=dy) # Wave numbers in y (0, 1, ..., N/2)
+    dx = 2 * torch.pi / Lx * M
+    dz = 2 * torch.pi / Lz * N
+    kx = torch.fft.fftfreq (M) * dx # Wave numbers in x (0, 1, ..., N/2, -N/2, ..., -1)
+    kz = torch.fft.rfftfreq(N) * dz # Wave numbers in y (0, 1, ..., N/2)
     kx, kz = torch.meshgrid(kx, kz, indexing='xy')
     k = torch.sqrt(kx ** 2 + kz ** 2)
 
@@ -173,25 +174,26 @@ def generate_ocean_patch(Lx: float, Lz: float, M: int, N: int, wind: Float[Tenso
     omega = generate_ocean_patch_dispersion_relation(k)
     
     # Fourier amplitudes at time 0 ~ gaussian random variables
-    xi_real = torch.randn(N//2 + 1, M)
-    xi_imag = torch.randn(N//2 + 1, M)
+    xi_real = torch.randn(N // 2 + 1, M)
+    xi_imag = torch.randn(N // 2 + 1, M)
     h_k0 = (xi_real + 1j * xi_imag) * torch.sqrt(P_h) # real DC and Nyquist frequencies handled by irfft2
 
     # Fourier amplitudes at time t
     h_kt = h_k0 * torch.exp(1j * omega * t) #+ torch.conj(-h_k0) * torch.exp(-1j * omega * t)
 
     # Compute height, tangent, and normal maps
-    hmap = torch.fft.irfft2(h_kt, s=(N, M))
-    hmap_grad_x = torch.fft.irfft2(1j * kx * h_kt, s=(N, M)) * M / Lx # rescale to match grid resolution
-    hmap_grad_z = torch.fft.irfft2(1j * kz * h_kt, s=(N, M)) * N / Lz
+    scale = (M * N) / (Lx * Lz)
+    hmap = scale * torch.fft.irfft2(h_kt, s=(N, M))
+    hmap_grad_x = scale * torch.fft.irfft2(1j * kx * h_kt, s=(N, M))
+    hmap_grad_z = scale * torch.fft.irfft2(1j * kz * h_kt, s=(N, M))
     hmap_grad = torch.stack([hmap_grad_x, hmap_grad_z], dim=-1)
     nmap = torch.stack([-hmap_grad_x, torch.ones_like(hmap), -hmap_grad_z], dim=-1)
-    nmap = torch.nn.functional.normalize(nmap, p=2, dim=-1)
+    nmap = torch.nn.functional.normalize(nmap, dim=-1)
 
     # Compute positions at each grid point
-    x = torch.linspace(0, Lx, M)
-    z = torch.linspace(0, Lz, N)
-    x, z = torch.meshgrid(x, z, indexing='ij')
+    x = torch.linspace(0, Lx, M + 1)[:-1]
+    z = torch.linspace(0, Lz, N + 1)[:-1]
+    x, z = torch.meshgrid(x, z, indexing='xy')
     rmap = torch.stack([x, hmap, z], dim=-1)
 
     return OceanPatch(hmap, nmap, rmap, dict(Lx=Lx, Lz=Lz, M=M, N=N, t=t, wind=wind, height_grad=hmap_grad))
@@ -203,7 +205,7 @@ def generate_ocean_albedo(depth: Float[Tensor, "H W"]) -> Float[Tensor, "H W 3"]
     albedo_top = WATER_ALBEDO_TOP.to(depth.device)
     albedo_bot = WATER_ALBEDO_BOT.to(depth.device)
     return torch.where(
-        depth[..., None] < 1, 
+        depth[..., None] < WATER_ALBEDO_END, 
         albedo_top + (albedo_bot - albedo_top) * depth[..., None], 
         albedo_bot
     )
@@ -228,8 +230,8 @@ def points2indices(points: Float[Tensor, "H W 3"], M: int, N: int, Lx: float, Lz
 def generate_ocean_bottom_lightmap(
     patch: OceanPatch,
     image: Float[Tensor, "H W 3"],
-    depth: Float[Tensor, "H W"] = None,
-    light: Float[Tensor, "3"] = None,
+    depth: Float[Tensor, "H W"],
+    light: Float[Tensor, "3"],
     light_ambient: float = 0,
     light_scatter: float = 0,
     device='cuda'
@@ -238,8 +240,6 @@ def generate_ocean_bottom_lightmap(
     """
     H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
-    depth = depth if depth is not None else torch.full((H, W), 5.0)
-    light = light if light is not None else -UP_DIRECTION
     color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
@@ -253,25 +253,26 @@ def generate_ocean_bottom_lightmap(
     nt = refraction(ni, ns, REFRACTION_INDEX['air'], REFRACTION_INDEX['water'])
     _, transmission_mult = compute_fresnel(ni, ns, nt) # (H, W)
 
-    # trace light rays from ocean surface to ocean bottom
+    # trace light rays from ocean surface to ocean bottom assuming constant depth
     points = patch.points.to(device)
-    distance = torch.abs((points[..., 1] + depth) / nt[..., 1]) # (H, W)
-    bottom_points = points - distance[..., None] * nt # (H, W, 3)
+    distance = -(points[..., 1] + depth) / nt[..., 1] # (H, W)
+    bottom_points = points + distance[..., None] * nt # (H, W, 3)
+    assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
-    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz)
+    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
     accum = torch.zeros_like(image)
-    accum[x, z] += compute_transmission(
+    accum[z, x] += compute_transmission(
         image,
         distance[..., None],
         light,
-        light_ambient, 
+        light_ambient,
         light_scatter,
         transmission_mult[..., None]
     )[mask] * color[mask]
-    
-    # lightmap is density based so smooth operation should be average
+
+    # smooth lightmap
     accum = accum.permute(2, 0, 1)[None]
-    accum = torch.nn.functional.avg_pool2d(accum, 11, stride=1, padding=5)
+    accum = torch.nn.functional.max_pool2d(accum, 5, stride=1, padding=2)
     accum = accum[0].permute(1, 2, 0)
     
     return torch.clamp(accum, 0, 1)
@@ -280,8 +281,8 @@ def generate_ocean_bottom_lightmap(
 def apply_corruption_ocean(
     patch: OceanPatch,
     image: Float[Tensor, "H W 3"],
-    depth: Float[Tensor, "H W"] = None,
-    light: Float[Tensor, "3"] = None,
+    depth: Float[Tensor, "H W"],
+    light: Float[Tensor, "3"],
     light_ambient: float = 0, 
     light_scatter: float = 0,
     light_specular_mult: float = 0.95,
@@ -292,8 +293,6 @@ def apply_corruption_ocean(
     """
     H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
-    depth = depth if depth is not None else torch.full((H, W), 5)
-    light = light if light is not None else -UP_DIRECTION
     color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
@@ -313,7 +312,7 @@ def apply_corruption_ocean(
     bundle = patch.camera_bundle()
 
     # reflection and refraction are symmetric wrt time reversal
-    ni = bundle.directions[..., 0, :]
+    ni = bundle.directions[..., 0, :].float()
     ns = patch.normal
     ni = ni.to(device)
     ns = ns.to(device)
@@ -323,10 +322,11 @@ def apply_corruption_ocean(
 
     accum = torch.zeros((H, W, 3), device=device)
 
-    # trace (inverse) light rays from ocean surface to ocean bottom
+    # trace (inverse) light rays from ocean surface to ocean bottom assuming constant depth
     points = patch.points.to(device)
-    distance = torch.abs((points[..., 1] + depth) / nt[..., 1]) # (H, W)
-    bottom_points = points - distance[..., None] * nt  # (H, W, 3)
+    distance = -(points[..., 1] + depth) / nt[..., 1] # (H, W)
+    bottom_points = points + distance[..., None] * nt # (H, W, 3)
+    assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
     # constant directional light so can accumulate off grid points
     x, z, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
@@ -339,14 +339,13 @@ def apply_corruption_ocean(
         light_ambient,
         light_scatter, 
         transmission_mult[..., None]
-    )[x, z] * color
+    )[z, x] * color
     #accum = torch.log(1 + accum) # smooth out lightmap
 
     # compute reflection by seeing if unreflected ray is within cosine threshold of vertical
     reflection_unit = torch.tensor([light[0], -light[1], light[2]], device=device) / torch.norm(light)
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
-    #reflection_gain = reflection_gain * color
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
 
     return torch.clamp(accum, 0, 1)
