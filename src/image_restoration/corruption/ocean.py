@@ -7,7 +7,7 @@ from torch import Tensor
 from jaxtyping import Float32
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
-from image_restoration.corruption.optics import *
+from image_restoration_src.corruption.optics import *
 
 
 np.random.seed(0)
