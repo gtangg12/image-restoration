@@ -27,15 +27,15 @@ class ApplyOceanCorruption:
         Randomly sample parameters for the ocean corruption transform.
         """
         wind = torch.tensor([random.uniform(0, 50), random.uniform(0, 50)]).float()
-        t = random.uniform(0, 10)
+        t=0
         wind_alignment = random.uniform(0, 10)
         wave_dampening = random.uniform(0, 1)
-        depth = random.uniform(0, 10)
+        depth = random.uniform(0, 2.5)
         light = torch.tensor([random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1)])
         intensity = random.uniform(0, 5)
-        light_ambient = random.uniform(0, 1)
+        light_ambient = random.uniform(0.05, 1)
         light_scatter = random.uniform(0, 1)
-        light_specular_mult = random.uniform(0, 1)
+        light_specular_mult = random.uniform(0.5, 1)
         light_specular_gain = random.uniform(0, 10)
 
         return wind, t, wind_alignment, wave_dampening, depth, light, intensity, light_ambient, light_scatter, light_specular_mult, light_specular_gain

@@ -7,14 +7,14 @@ from torch import Tensor
 from jaxtyping import Float32
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
-from image_restoration_src.corruption.optics import *
+from src.image_restoration.corruption.optics import *
 
 
 np.random.seed(0)
 
 
 g = 9.81 # Gravity
-UP_DIRECTION = torch.tensor([0.00, 1.00, 0.00])
+UP_DIRECTION = torch.tensor([0.00, 1.00, 0.00]) # camera angle
 WATER_ALBEDO_TOP = torch.tensor([0.60, 0.60, 0.60])
 WATER_ALBEDO_BOT = torch.tensor([0.00, 0.48, 0.57])
 WATER_ALBEDO_END = 1
@@ -59,9 +59,9 @@ def generate_ocean_patch_wave_spectrum(
     kx: Float[Tensor, "M"],
     kz: Float[Tensor, "N"],
     wind: Float[Tensor, "2"], 
-    wind_alignment: float = 6,
-    wave_dampening: float = 0.1,
-    wave_amplitude: float = 4096,
+    wind_alignment: float = 6, # 0 to 10
+    wave_dampening: float = 0.1, # 
+    wave_amplitude: float = 4096, # scaling parameter
 ) -> Float[Tensor, "M N"]:
     """ Generate an fourier spectrum of ocean waves acording to the Phillips spectrum
 
@@ -231,9 +231,9 @@ def generate_ocean_bottom_lightmap(
     patch: OceanPatch,
     image: Float[Tensor, "H W 3"],
     depth: Float[Tensor, "H W"],
-    light: Float[Tensor, "3"],
-    light_ambient: float = 0,
-    light_scatter: float = 0,
+    light: Float[Tensor, "3"], # light coming from the sun
+    light_ambient: float = 0, # light already in the ocean
+    light_scatter: float = 0, # "fog" equivalent, light attenuation
     device='cuda'
 ) -> Float[Tensor, "H W 3"]:
     """
@@ -285,8 +285,9 @@ def apply_corruption_ocean(
     light: Float[Tensor, "3"],
     light_ambient: float = 0, 
     light_scatter: float = 0,
-    light_specular_mult: float = 0.95,
-    light_specular_gain: float = 0.1,
+    light_specular_mult: float = 0.95, # angle with the normal
+    light_specular_gain: float = 0.1, # how powerful the reflecting source is
+    sun_direction: Float[Tensor, "3"] = torch.tensor([1, 1, 0]),  # Fixed sun angle [x, z, y]
     device='cuda',
 ) -> Float[Tensor, "H W 3"]:
     """
@@ -298,6 +299,7 @@ def apply_corruption_ocean(
     depth = depth.to(device)
     light = light.to(device)
     color = color.to(device)
+    sun_direction = sun_direction.to(device)
     image_bottom = generate_ocean_bottom_lightmap(
         patch, 
         image, 
@@ -347,6 +349,11 @@ def apply_corruption_ocean(
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
+
+    # Sunglint: Identify rays refracted toward the sun direction
+    sun_mask = torch.sum(nt * sun_direction, dim=-1) > 0.5  # Cosine similarity threshold
+    sunglint = light_specular_gain * torch.ones_like(accum)  # Pure white glint
+    accum = torch.where(sun_mask[..., None], sunglint, accum)
 
     return torch.clamp(accum, 0, 1)
 
