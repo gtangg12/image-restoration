@@ -1,53 +1,48 @@
-import numpy as np
-import torch
-from PIL import Image
-from image_restoration.corruption.ocean import *
-from image_restoration.common import ASSETS_DIR
 import os
+import torch
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from PIL import Image
+from src.image_restoration.corruption.transforms import ApplyOceanCorruption
 
-images = os.listdir("imagenet-mini")
+# Define the ApplyOceanCorruption transform
+ocean_transform = ApplyOceanCorruption(Lx=64, Lz=64, size=(256, 256), device='cuda')
 
-output_dir = "imagenet_corrupted"  # Replace with output directory
-os.makedirs(output_dir, exist_ok=True)
+# Define preprocessing pipeline
+resize_transform = transforms.Resize((256, 256))
+to_tensor_transform = transforms.ToTensor()
 
-# WE MAY WANT TO VARY THESE PARAMETERS
-M = 2048 # resolution
-N = 2048
-Lx = 64 # patch size (m)
-Lz = 64
-wind = torch.tensor([20, 20]).float() # wind vector (m/s)
-t = 0 # time
-patch = generate_ocean_patch(Lx, Lz, M, N, wind, t=t, wind_alignment=6, wave_dampening=0.05)
+# Parameters
+batch_size = 16
+num_workers = 4
 
-def load_image(name: str):
-    image = Image.open(ASSETS_DIR / name)
-    image = image.resize((M, N))
-    image = torch.tensor(np.array(image)) / 255.0
-    return image
+# Create a dataset of images from the source folder
+image_folder = "image_restoration_src/data"
+image_paths = [os.path.join(image_folder, filename) for filename in os.listdir(image_folder) if filename.endswith(('.png', '.jpg', '.JPEG'))]
 
-for path in images:
-    im = load_image(path)
+# Output folders
+os.makedirs("ground_truth", exist_ok=True)
+os.makedirs("distorted", exist_ok=True)
 
-    # WE MAY WANT TO VARY THESE
-    depth = torch.full((M, N), 1) # 0.01 for caustics
-    light = torch.tensor([0, -1.0, 0])
-    light = light / torch.norm(light) * 2.0 # intensity
-    light_ambient = 0.05
-    light_scatter = 0.05
-    light_specular_mult = 0.85
-    light_specular_gain = 5.0
-    device = 'cuda'
+# Save images
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    image_corrupted = apply_corruption_ocean(
-        patch, 
-        im, 
-        depth, 
-        light, 
-        light_ambient=light_ambient,
-        light_scatter=light_scatter,
-        light_specular_mult=light_specular_mult,
-        light_specular_gain=light_specular_gain,
-        device=device
-    )
-    corrupted_image_path = os.path.join(output_dir, "corrupted_"+path)
-    Image.fromarray((image_corrupted.cpu().numpy() * 255).astype(np.uint8)).save(corrupted_image_path)
+for i, image_path in enumerate(image_paths):
+    # Get the filename from the path
+    filename = os.path.basename(image_path)
+
+    # Load and preprocess the original image
+    original_image = Image.open(image_path).convert("RGB")
+    resized_image = resize_transform(original_image)
+    ground_truth_tensor = to_tensor_transform(resized_image)
+
+    # Apply the ocean corruption transform
+    distorted_tensor = ocean_transform(ground_truth_tensor.to(device))
+
+    # Convert tensors back to PIL images
+    ground_truth_image = transforms.ToPILImage()(ground_truth_tensor)
+    distorted_image = transforms.ToPILImage()(distorted_tensor.cpu())
+
+    # Save images
+    ground_truth_image.save(os.path.join("ground_truth", filename))
+    distorted_image.save(os.path.join("distorted", filename))
