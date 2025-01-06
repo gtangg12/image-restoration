@@ -1,6 +1,7 @@
 import torch
 import random
-from corruption.ocean import *
+from image_restoration.corruption.ocean import *
+
 
 class ApplyOceanCorruption:
     def __init__(self, 

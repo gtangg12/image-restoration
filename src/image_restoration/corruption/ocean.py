@@ -7,7 +7,7 @@ from torch import Tensor
 from jaxtyping import Float32
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
-from src.image_restoration.corruption.optics import *
+from image_restoration.corruption.optics import *
 
 
 np.random.seed(0)
@@ -287,7 +287,7 @@ def apply_corruption_ocean(
     light_scatter: float = 0,
     light_specular_mult: float = 0.95, # angle with the normal
     light_specular_gain: float = 0.1, # how powerful the reflecting source is
-    sun_direction: Float[Tensor, "3"] = torch.tensor([1, 1, 0]),  # Fixed sun angle [x, z, y]
+    # sun_direction: Float[Tensor, "3"] = torch.tensor([1, 1, 0]),  # Fixed sun angle [x, z, y]
     device='cuda',
 ) -> Float[Tensor, "H W 3"]:
     """
@@ -350,10 +350,10 @@ def apply_corruption_ocean(
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
 
-    # Sunglint: Identify rays refracted toward the sun direction
-    sun_mask = torch.sum(nt * sun_direction, dim=-1) > 0.5  # Cosine similarity threshold
-    sunglint = light_specular_gain * torch.ones_like(accum)  # Pure white glint
-    accum = torch.where(sun_mask[..., None], sunglint, accum)
+    # # Sunglint: Identify rays refracted toward the sun direction
+    # sun_mask = torch.sum(nt * sun_direction, dim=-1) > 0.5  # Cosine similarity threshold
+    # sunglint = light_specular_gain * torch.ones_like(accum)  # Pure white glint
+    # accum = torch.where(sun_mask[..., None], sunglint, accum)
 
     return torch.clamp(accum, 0, 1)
 
