@@ -7,7 +7,7 @@ from torch import Tensor
 from jaxtyping import Float32
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
-from src.image_restoration.corruption.optics import *
+from image_restoration.corruption.optics import *
 
 
 np.random.seed(0)
@@ -298,11 +298,9 @@ def apply_corruption_ocean(
     """
     H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
-    color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
     light = light.to(device)
-    color = color.to(device)
     
     image_bottom = generate_ocean_bottom_lightmap(
         patch, 
@@ -326,27 +324,26 @@ def apply_corruption_ocean(
     nt = refraction(ni, ns, REFRACTION_INDEX['air'], REFRACTION_INDEX['water'])
     reflection_mult, transmission_mult = compute_fresnel(ni, ns, nt)
 
-    accum = torch.zeros((H, W, 3), device=device)
-
     # trace (inverse) light rays from ocean surface to ocean bottom assuming constant depth
     points = patch.points.to(device)
     distance = -(points[..., 1] + depth) / nt[..., 1] # (H, W)
     bottom_points = points + distance[..., None] * nt # (H, W, 3)
     assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
-    # compute transmission through ocean surface
-    image_bottom_map = image_bottom * transmission_mult[..., None]
+    # compute ocean surface transmission and albedo maps
+    imagemap = image_bottom * transmission_mult[..., None]
+    colormap = generate_ocean_albedo(distance)
 
     # accumlate camera image
     x, z, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
     x = x.reshape(H, W)
     z = z.reshape(H, W)
     accum = compute_transmission(
-        image_bottom_map,
+        imagemap,
         distance[..., None],
         light_ambient,
         light_scatter,
-    )[z, x] * color
+    )[z, x] * colormap[z, x]
     #accum = torch.log(1 + accum) # smooth out lightmap
 
     # reflection is symmetric wrt time reversal
