@@ -7,7 +7,7 @@ from torch import Tensor
 from jaxtyping import Float32
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
-from image_restoration.corruption.optics import *
+from src.image_restoration.corruption.optics import *
 
 
 np.random.seed(0)
@@ -259,7 +259,7 @@ def generate_ocean_bottom_lightmap(
     bottom_points = points + distance[..., None] * nt # (H, W, 3)
     assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
-    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
+    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=False)
     accum = torch.zeros_like(image)
     accum[z, x] += compute_transmission(
         image,
@@ -299,7 +299,7 @@ def apply_corruption_ocean(
     depth = depth.to(device)
     light = light.to(device)
     color = color.to(device)
-    sun_direction = sun_direction.to(device)
+    # sun_direction = sun_direction.to(device)
     image_bottom = generate_ocean_bottom_lightmap(
         patch, 
         image, 
@@ -331,17 +331,15 @@ def apply_corruption_ocean(
     assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
     # constant directional light so can accumulate off grid points
-    x, z, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
-    x = x.reshape(H, W)
-    z = z.reshape(H, W)
-    accum = compute_transmission(
-        image_bottom,
-        depth[..., None],
+    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=False)
+    accum[z, x] += compute_transmission(
+        image,
+        distance[..., None],
         light,
         light_ambient,
-        light_scatter, 
+        light_scatter,
         transmission_mult[..., None]
-    )[z, x] * color
+    )[mask] * color[mask]
     #accum = torch.log(1 + accum) # smooth out lightmap
 
     # compute reflection by seeing if unreflected ray is within cosine threshold of vertical
@@ -349,11 +347,6 @@ def apply_corruption_ocean(
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
-
-    # # Sunglint: Identify rays refracted toward the sun direction
-    # sun_mask = torch.sum(nt * sun_direction, dim=-1) > 0.5  # Cosine similarity threshold
-    # sunglint = light_specular_gain * torch.ones_like(accum)  # Pure white glint
-    # accum = torch.where(sun_mask[..., None], sunglint, accum)
 
     return torch.clamp(accum, 0, 1)
 
