@@ -348,8 +348,8 @@ def apply_corruption_ocean(
     )[z, x] * color
     #accum = torch.log(1 + accum) # smooth out lightmap
 
-    # compute reflection by seeing if unreflected ray is within cosine threshold of vertical
-    reflection_unit = torch.tensor([light[0], -light[1], light[2]], device=device) / torch.norm(light)
+    # reflection is symmetric wrt time reversal
+    reflection_unit = torch.tensor([-light[0], -light[1], light[2]], device=device) / torch.norm(light)
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
