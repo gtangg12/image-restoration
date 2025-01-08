@@ -60,22 +60,13 @@ def compute_fresnel(
 def compute_transmission(
     image: Float[Tensor, "... 3"],
     depth: Float[Tensor, "... 1"],
-    light: Float[Tensor, "3"],
     light_ambient: float,
     light_scatter: float,
-    transmission_mult: Float[Tensor, "... 1"]
 ) -> Float[Tensor, "... 3"]:
-    """ Compute the transmission of light through a medium according to Koschmieder's law. 
-    The luminance at a distance of d is given by
-
-        L = T * exp(-k * d) * I + L_ambient * (1 - T * exp(-k * d))
-
-    where T denotes the transmission coefficient, T * exp(-k * d) transmission, k scattering coefficient, and I image.
+    """ Compute the transmission of light through a medium according to Koschmieder's law.
     """
-    transmission = torch.exp(-light_scatter * depth)
-    luminance = torch.norm(light) * transmission  
-    scattered = light_ambient * (1 - transmission)
-    return transmission_mult * luminance * image + scattered
+    transmission_map = torch.exp(-light_scatter * depth)
+    return transmission_map * image + light_ambient * (1 - transmission_map)
 
 
 if __name__ == '__main__':

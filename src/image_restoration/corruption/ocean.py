@@ -211,6 +211,7 @@ def generate_ocean_albedo(depth: Float[Tensor, "H W"]) -> Float[Tensor, "H W 3"]
     )
     #return WATER_ALBEDO.to(depth.device).expand(depth.shape[0], depth.shape[1], 3)
 
+
 def points2indices(points: Float[Tensor, "H W 3"], M: int, N: int, Lx: float, Lz: float, mod=False) -> tuple[
     Float[Tensor, "H * W"],
     Float[Tensor, "H * W"]
@@ -240,11 +241,9 @@ def generate_ocean_bottom_lightmap(
     """
     H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
-    color = generate_ocean_albedo(depth)
     image = image.to(device)
     depth = depth.to(device)
     light = light.to(device)
-    color = color.to(device)
 
     ni = light / torch.norm(light.float())
     ns = patch.normal
@@ -259,22 +258,28 @@ def generate_ocean_bottom_lightmap(
     bottom_points = points + distance[..., None] * nt # (H, W, 3)
     assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
-    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=False)
+    # compute surface light and albedo maps
+    lightmap = torch.full_like(image, torch.norm(light)) * transmission_mult[..., None]
+    colormap = generate_ocean_albedo(distance)
+
+    # accumulate bottom lightmap
+    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=True) # tile ocean patch via mod=True
     accum = torch.zeros_like(image)
     accum[z, x] += compute_transmission(
-        image,
+        lightmap,
         distance[..., None],
-        light,
         light_ambient,
         light_scatter,
-        transmission_mult[..., None]
-    )[mask] * color[mask]
+    )[mask] * colormap[mask]
 
     # smooth lightmap
     accum = accum.permute(2, 0, 1)[None]
     accum = torch.nn.functional.max_pool2d(accum, 5, stride=1, padding=2)
     accum = accum[0].permute(1, 2, 0)
     
+    # add texture
+    accum = accum * image
+
     return torch.clamp(accum, 0, 1)
 
 
@@ -287,7 +292,6 @@ def apply_corruption_ocean(
     light_scatter: float = 0,
     light_specular_mult: float = 0.95, # angle with the normal
     light_specular_gain: float = 0.1, # how powerful the reflecting source is
-    # sun_direction: Float[Tensor, "3"] = torch.tensor([1, 1, 0]),  # Fixed sun angle [x, z, y]
     device='cuda',
 ) -> Float[Tensor, "H W 3"]:
     """
@@ -299,7 +303,7 @@ def apply_corruption_ocean(
     depth = depth.to(device)
     light = light.to(device)
     color = color.to(device)
-    # sun_direction = sun_direction.to(device)
+    
     image_bottom = generate_ocean_bottom_lightmap(
         patch, 
         image, 
@@ -330,20 +334,23 @@ def apply_corruption_ocean(
     bottom_points = points + distance[..., None] * nt # (H, W, 3)
     assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
 
-    # constant directional light so can accumulate off grid points
-    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=False)
-    accum[z, x] += compute_transmission(
-        image,
+    # compute transmission through ocean surface
+    image_bottom_map = image_bottom * transmission_mult[..., None]
+
+    # accumlate camera image
+    x, z, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
+    x = x.reshape(H, W)
+    z = z.reshape(H, W)
+    accum = compute_transmission(
+        image_bottom_map,
         distance[..., None],
-        light,
         light_ambient,
         light_scatter,
-        transmission_mult[..., None]
-    )[mask] * color[mask]
+    )[z, x] * color
     #accum = torch.log(1 + accum) # smooth out lightmap
 
-    # compute reflection by seeing if unreflected ray is within cosine threshold of vertical
-    reflection_unit = torch.tensor([light[0], -light[1], light[2]], device=device) / torch.norm(light)
+    # reflection is symmetric wrt time reversal
+    reflection_unit = torch.tensor([-light[0], -light[1], light[2]], device=device) / torch.norm(light)
     reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
     reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
     accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
