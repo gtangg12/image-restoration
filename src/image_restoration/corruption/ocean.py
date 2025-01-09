@@ -290,8 +290,8 @@ def apply_corruption_ocean(
     light: Float[Tensor, "3"],
     light_ambient: float = 0, 
     light_scatter: float = 0,
-    light_specular_mult: float = 0.95, # angle with the normal
     light_specular_gain: float = 0.1, # how powerful the reflecting source is
+    light_specular_gpow: float = 1.0, # how much the specular reflection is focused
     device='cuda',
 ) -> Float[Tensor, "H W 3"]:
     """
@@ -348,9 +348,9 @@ def apply_corruption_ocean(
 
     # reflection is symmetric wrt time reversal
     reflection_unit = torch.tensor([-light[0], -light[1], light[2]], device=device) / torch.norm(light)
-    reflection_mask = torch.sum(nr * reflection_unit, dim=-1) > light_specular_mult
-    reflection_gain = torch.norm(light) * reflection_mult[..., None] * light_specular_gain
-    accum = torch.where(reflection_mask[..., None], reflection_gain + accum, accum)
+    reflection_dotp = torch.sum(nr * reflection_unit, dim=-1)[..., None]
+    reflection_gain = torch.norm(light) * reflection_mult[..., None] * (reflection_dotp ** light_specular_gpow) * light_specular_gain
+    accum = reflection_gain + accum
 
     return torch.clamp(accum, 0, 1)
 
