@@ -2,7 +2,7 @@ import multiprocessing as mp
 
 import torch
 from torch import Tensor
-from jaxtyping import Float, Bool
+from jaxtyping import Float
 from scipy.ndimage import distance_transform_edt
 
 
@@ -97,8 +97,3 @@ if __name__ == '__main__':
     ns = ns / torch.norm(ns)
     nt = refraction(ni, ns, 1.00, 1.33)
     print(compute_fresnel(ni, ns, nt)) # (0.028, 0.972)
-
-    # test interpolation
-    tensor = torch.tensor([[[1, 2, 3], [0, 0, 0], [7, 8, 9]]]).float()
-    mask = torch.tensor([[0, 1, 0]]).bool()
-    print(interpolate_with_nearest(tensor, mask)) # [[[1, 2, 3], [1, 2, 3], [7, 8, 9]]]

@@ -4,10 +4,11 @@ import numpy as np
 import torch
 import torchvision.transforms.functional as F
 from torch import Tensor
-from jaxtyping import Float32
+from jaxtyping import Float
 from nerfstudio.cameras.cameras import Cameras, RayBundle
 
 from image_restoration.corruption.optics import *
+from image_restoration.corruption.geom import *
 
 
 np.random.seed(0)
@@ -25,9 +26,9 @@ class OceanPatch:
     """ N x M resolution ocean patch of size Lz x Lx (m)
     """
     # Height and normal maps of the ocean patch
-    height: Float32[Tensor, "N M"]
-    normal: Float32[Tensor, "N M 3"]
-    points: Float32[Tensor, "N M 3"]
+    height: Float[Tensor, "N M"]
+    normal: Float[Tensor, "N M 3"]
+    points: Float[Tensor, "N M 3"]
 
     # Ocean patch metadata
     metadata: dict = field(default_factory=dict)
@@ -212,22 +213,6 @@ def generate_ocean_albedo(depth: Float[Tensor, "H W"]) -> Float[Tensor, "H W 3"]
     #return WATER_ALBEDO.to(depth.device).expand(depth.shape[0], depth.shape[1], 3)
 
 
-def points2indices(points: Float[Tensor, "H W 3"], M: int, N: int, Lx: float, Lz: float, mod=False) -> tuple[
-    Float[Tensor, "H * W"],
-    Float[Tensor, "H * W"]
-]:
-    """
-    """
-    x = torch.floor(points[..., 0] * M / Lx).long()
-    z = torch.floor(points[..., 2] * N / Lz).long()
-    if mod: # assuming consistent points, useful for accumulation operations for points that go off image edge
-        x = x % M
-        z = z % N
-    mask = torch.logical_and(x >= 0, x < M) & \
-           torch.logical_and(z >= 0, z < N)
-    return x[mask], z[mask], mask
-
-
 def generate_ocean_bottom_lightmap(
     patch: OceanPatch,
     image: Float[Tensor, "H W 3"],
@@ -252,25 +237,25 @@ def generate_ocean_bottom_lightmap(
     nt = refraction(ni, ns, REFRACTION_INDEX['air'], REFRACTION_INDEX['water'])
     _, transmission_mult = compute_fresnel(ni, ns, nt) # (H, W)
 
-    # trace light rays from ocean surface to ocean bottom assuming constant depth
+    # trace light rays from ocean surface to ocean bottom
     points = patch.points.to(device)
-    distance = -(points[..., 1] + depth) / nt[..., 1] # (H, W)
-    bottom_points = points + distance[..., None] * nt # (H, W, 3)
-    assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
+    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz)
 
     # compute surface light and albedo maps
     lightmap = torch.full_like(image, torch.norm(light)) * transmission_mult[..., None]
     colormap = generate_ocean_albedo(distance)
 
     # accumulate bottom lightmap
-    x, z, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=True) # tile ocean patch via mod=True
+    indices, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True) # tile ocean patch via mod=True
+    x = indices[..., 0]
+    z = indices[..., 1]
     accum = torch.zeros_like(image)
     accum[z, x] += compute_transmission(
         lightmap,
         distance[..., None],
         light_ambient,
         light_scatter,
-    )[mask] * colormap[mask]
+    ) * colormap
 
     # smooth lightmap
     accum = accum.permute(2, 0, 1)[None]
@@ -326,18 +311,17 @@ def apply_corruption_ocean(
 
     # trace (inverse) light rays from ocean surface to ocean bottom assuming constant depth
     points = patch.points.to(device)
-    distance = -(points[..., 1] + depth) / nt[..., 1] # (H, W)
-    bottom_points = points + distance[..., None] * nt # (H, W, 3)
-    assert torch.allclose(bottom_points[..., 1], -depth, atol=1e-5)
+    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz)
 
     # compute ocean surface transmission and albedo maps
     imagemap = image_bottom * transmission_mult[..., None]
     colormap = generate_ocean_albedo(distance)
 
     # accumlate camera image
-    x, z, _ = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
-    x = x.reshape(H, W)
-    z = z.reshape(H, W)
+    indices, mask = points2indices(bottom_points, M, N, Lx, Lz, mod=True)
+    x = indices[..., 0]
+    z = indices[..., 1]
+    imagemap[~mask] = 0 # set invalid points color to 0
     accum = compute_transmission(
         imagemap,
         distance[..., None],
