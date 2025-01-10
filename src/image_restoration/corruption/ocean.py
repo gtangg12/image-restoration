@@ -220,11 +220,11 @@ def generate_ocean_bottom_lightmap(
     light: Float[Tensor, "3"], # light coming from the sun
     light_ambient: float = 0, # light already in the ocean
     light_scatter: float = 0, # "fog" equivalent, light attenuation
+    trace_batches=1,
     device='cuda'
 ) -> Float[Tensor, "H W 3"]:
     """
     """
-    H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
     image = image.to(device)
     depth = depth.to(device)
@@ -239,7 +239,7 @@ def generate_ocean_bottom_lightmap(
 
     # trace light rays from ocean surface to ocean bottom
     points = patch.points.to(device)
-    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz)
+    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz, nbatches=trace_batches)
 
     # compute surface light and albedo maps
     lightmap = torch.full_like(image, torch.norm(light)) * transmission_mult[..., None]
@@ -258,8 +258,9 @@ def generate_ocean_bottom_lightmap(
     ) * colormap
 
     # smooth lightmap
+    accum_pool = max(min(M, N) // 64 + 1, 5)
     accum = accum.permute(2, 0, 1)[None]
-    accum = torch.nn.functional.max_pool2d(accum, 5, stride=1, padding=2)
+    accum = torch.nn.functional.max_pool2d(accum, accum_pool, stride=1, padding=accum_pool // 2)
     accum = accum[0].permute(1, 2, 0)
     
     # add texture
@@ -277,11 +278,11 @@ def apply_corruption_ocean(
     light_scatter: float = 0,
     light_specular_gain: float = 0.1, # how powerful the reflecting source is
     light_specular_gpow: float = 1.0, # how much the specular reflection is focused
+    trace_batches=1,
     device='cuda',
 ) -> Float[Tensor, "H W 3"]:
     """
     """
-    H, W = image.shape[:2]
     M, N, Lx, Lz = patch.metadata['M'], patch.metadata['N'], patch.metadata['Lx'], patch.metadata['Lz']
     image = image.to(device)
     depth = depth.to(device)
@@ -293,7 +294,8 @@ def apply_corruption_ocean(
         depth, 
         light, 
         light_ambient=light_ambient, 
-        light_scatter=light_scatter, 
+        light_scatter=light_scatter,
+        trace_batches=trace_batches,
         device=device
     )
 
@@ -311,7 +313,7 @@ def apply_corruption_ocean(
 
     # trace (inverse) light rays from ocean surface to ocean bottom assuming constant depth
     points = patch.points.to(device)
-    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz)
+    bottom_points, distance = trace_points(points, nt, depth, Lx, Lz, nbatches=trace_batches)
 
     # compute ocean surface transmission and albedo maps
     imagemap = image_bottom * transmission_mult[..., None]

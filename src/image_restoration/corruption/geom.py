@@ -9,13 +9,13 @@ def points2indices(points: Float[Tensor, "H W 3"], M: int, N: int, Lx: float, Lz
 ]:
     """
     """
-    xi = torch.floor(points[..., 0] * M / Lx).int()
-    zi = torch.floor(points[..., 2] * N / Lz).int()
+    xi = torch.floor(points[..., 0] * N / Lx).int()
+    zi = torch.floor(points[..., 2] * M / Lz).int()
     if mod: # assuming consistent points, useful for accumulation operations for points that go off image edge
-        xi %= M
-        zi %= N
-    mask = torch.logical_and(xi >= 0, xi < M) & \
-           torch.logical_and(zi >= 0, zi < N)
+        xi %= N
+        zi %= M
+    mask = torch.logical_and(xi >= 0, xi < N) & \
+           torch.logical_and(zi >= 0, zi < M)
     indices = torch.stack([xi, zi], dim=-1)
     return indices, mask
 
@@ -27,7 +27,7 @@ def trace_points(
     Lx: float, 
     Lz: float,
     half_precision=True, 
-    nbatches=2
+    nbatches=1
 ) -> tuple[
     Float[Tensor, "H W 3"],
     Float[Tensor, "H W"],
@@ -35,7 +35,6 @@ def trace_points(
 ]:
     """
     """
-    
     H, W, _ = points.shape
     distance_upper_bound = -(points[..., 1] + depth.max()) / directions[..., 1]
     tdelta = min(Lx / W, Lz / H) # grid cell step size lower bound
@@ -55,34 +54,34 @@ def trace_points(
         path = path.permute(0, 1, 3, 2)
         path_depth = -path[..., 1] # (H, W, nsteps)
 
-        indices, _ = points2indices(path, H, W, Lz, Lz, mod=True) # tile depth patch via mod=True
+        indices, _ = points2indices(path, H, W, Lx, Lz, mod=True) # tile depth patch via mod=True
         x = indices[..., 0]
         z = indices[..., 1]
         path_depth_bottom = depth[z, x] # (H, W, nsteps)
-
-        intersect = (path_depth >= path_depth_bottom).long() # (H, W, nsteps)
+        intersect = (path_depth >= path_depth_bottom).int() # (H, W, nsteps)
         intersect_mask = torch.sum(intersect, dim=-1) > 0 # (H, W)
 
         t = torch.argmax(intersect, dim=-1) # (H, W)
         intersect_depth = path_depth_bottom[
-            torch.arange(H)[:, ...],
-            torch.arange(W)[..., :],
+            torch.arange(H)[:, None],
+            torch.arange(W)[None, :],
             t
         ].float() # (H, W)
         return intersect_depth, intersect_mask
 
-    intersect_depth = torch.full_like(depth, -1)
     batch_step = nsteps // nbatches + (nsteps % nbatches > 0)
+    
+    intersect_depth = torch.full((H, W),    -1, device=points.device)
+    intersect_mask  = torch.full((H, W), False, device=points.device)
     for b in range(nbatches):
         i = b * batch_step
         j = i + batch_step
         steps = torch.arange(i, min(j, nsteps))
         intersect_depth_batch, intersect_mask_batch = push(steps)
-        if b == nbatches - 1:
-            # last batch defines intersection (avoids float point issues)
-            intersect_depth = intersect_depth_batch
-        else:
-            intersect_depth = torch.where(intersect_mask_batch, intersect_depth_batch, intersect_depth)
+        intersect_depth = torch.where(~intersect_mask, intersect_depth_batch, intersect_depth)
+        intersect_mask |= intersect_mask_batch
+    
+    intersect_depth = torch.where(~intersect_mask, depth.max(), intersect_depth) # catch all case
 
     distance = -(points[..., 1] + intersect_depth) / directions[..., 1]
     bottom_points = points + distance[..., None] * directions # (H, W, 3)
