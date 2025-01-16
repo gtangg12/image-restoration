@@ -2,7 +2,7 @@ import multiprocessing as mp
 
 import torch
 from torch import Tensor
-from jaxtyping import Float, Bool
+from jaxtyping import Float
 from scipy.ndimage import distance_transform_edt
 
 
@@ -29,8 +29,8 @@ def refraction(
     """
     eta = eta1 / eta2
     cos_theta_i = torch.abs(torch.sum(ni * ns, dim=-1, keepdims=True))
-    sin_theta_t = torch.sqrt(1.0 - cos_theta_i ** 2) * eta
-    cos_theta_t = torch.sqrt(1.0 - sin_theta_t ** 2)
+    sin_theta_t = torch.sqrt(torch.clamp(1.0 - cos_theta_i ** 2, min=0)) * eta
+    cos_theta_t = torch.sqrt(torch.clamp(1.0 - sin_theta_t ** 2, min=0))
 
     total_internal_reflection = sin_theta_t ** 2 > 1.0
     nt = eta * ni + (eta * cos_theta_i - cos_theta_t) * ns
@@ -46,8 +46,8 @@ def compute_fresnel(
     """ Compute fresnel reflection and transmission coefficients given the incident and outgoing angles 
     where we assume no loss of energy i.e. R + T = 1
     """
-    theta_i = torch.acos(torch.abs(torch.sum(ni * ns, dim=-1)))
-    theta_t = torch.acos(torch.abs(torch.sum(nt * ns, dim=-1)))
+    theta_i = torch.acos(torch.clamp(torch.abs(torch.sum(ni * ns, dim=-1)), -1.0, 1.0))
+    theta_t = torch.acos(torch.clamp(torch.abs(torch.sum(nt * ns, dim=-1)), -1.0, 1.0))
     R = 0.5 * (
         torch.sin(theta_t - theta_i) ** 2 / (torch.sin(theta_t + theta_i) + 1e-6) ** 2 + \
         torch.tan(theta_t - theta_i) ** 2 / (torch.tan(theta_t + theta_i) + 1e-6) ** 2
@@ -97,8 +97,3 @@ if __name__ == '__main__':
     ns = ns / torch.norm(ns)
     nt = refraction(ni, ns, 1.00, 1.33)
     print(compute_fresnel(ni, ns, nt)) # (0.028, 0.972)
-
-    # test interpolation
-    tensor = torch.tensor([[[1, 2, 3], [0, 0, 0], [7, 8, 9]]]).float()
-    mask = torch.tensor([[0, 1, 0]]).bool()
-    print(interpolate_with_nearest(tensor, mask)) # [[[1, 2, 3], [1, 2, 3], [7, 8, 9]]]
